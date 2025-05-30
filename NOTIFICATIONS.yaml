@@ -1,0 +1,625 @@
+notification_multi_utilisateur_avec_presence:
+  alias: notification - Notification multi-utilisateur avec présence
+  sequence:
+  - alias: Définition de CIBLE
+    variables:
+      cible: "{# Si vide, extraction de tout les mobile_app #}\n{% if personnes ==
+        '' or personnes is not defined %}\n  {{ integration_entities('mobile_app')
+        \n  | select('match','device_tracker')\n  | list }}\n{% else %}\n  {# Convertion
+        chaine en liste #}\n  {% if personnes.entity_id is string %}\n    {% set personnes
+        = { 'entity_id': [personnes.entity_id]} %}\n  {% endif %}\n  {# Récupération
+        des person et device_tracker en liste #}\n  {% set non_id = personnes.entity_id
+        | select('match', 'person|device_tracker') | list %}\n  {# Conversion des
+        usr_id en person #}\n  {% set id = personnes.entity_id | reject('search',
+        '\\.') | list %}\n  {% set id_people = states.person \n  | selectattr('attributes.user_id',
+        'in', id) \n  | map(attribute='entity_id') | list %}\n  {# Définition liste
+        de person et device_tracker sans doublon #}\n  {{ (non_id + id_people) | unique
+        | list }}\n{% endif %}"
+  - alias: Définition de TIMEOUT à 18h par défaut
+    variables:
+      timeout: '{% if timeout == '''' or timeout is not defined %}
+
+        18:00:00
+
+        {% else %}
+
+        {{timeout}}
+
+        {% endif %}'
+  - alias: Notif persistante si LOG
+    if:
+    - alias: LOG est activé
+      condition: template
+      value_template: '{{ log == true }}'
+    then:
+    - alias: Gestion TAG pour notification persistante HA
+      if:
+      - alias: Si un TAG existe, écrasement de la notification persistante
+        condition: template
+        value_template: '{{ tag is defined }}'
+      then:
+      - alias: Effacement si clear_notification
+        if:
+        - alias: Message est clear_notification
+          condition: template
+          value_template: '{{ message == "clear_notification" }} '
+        then:
+        - alias: Effacement notification persistante
+          metadata: {}
+          data:
+            notification_id: '{{tag}}'
+          action: persistent_notification.dismiss
+        else:
+        - alias: 'Notification persistante dans HA avec écrasement '
+          data:
+            title: '{{titre}}'
+            message: '{{ now().strftime(''%H:%M:%S'') }}<br>{{message}}<br><br>*Source:
+              {% if source is defined %}{{ source }}{% elif this is defined %}{{ this.attributes.friendly_name
+              }}{% else %}déclenchement manuel{% endif %}*'
+            data:
+              notification_id: '{{tag}}'
+          action: notify.persistent_notification
+      else:
+      - alias: 'Notification persistante dans HA sans écrasement '
+        data:
+          title: '{{titre}}'
+          message: '{{ now().strftime(''%H:%M:%S'') }}<br>{{message}}<br><br>*Source:
+            {% if source is defined %}{{ source }}{% elif this is defined %}{{ this.attributes.friendly_name
+            }}{% else %}déclenchement manuel{% endif %}*'
+        action: notify.persistent_notification
+  - alias: Notif mobile vers CIBLE présente
+    parallel:
+    - alias: Entrée n°1 de CIBLE
+      if:
+      - alias: Si entrée n°1 de CIBLE existe
+        condition: template
+        value_template: '{{ cible[0] is defined }}'
+      then:
+      - alias: Variables Personne/Appareil et Zone
+        variables:
+          cible_tmp: '{{cible[0]}}'
+          prox_zone: '{% if prox_zone is defined %}{{prox_zone.entity_id}}{% endif
+            %}'
+      - alias: Attendre si hors zone
+        if:
+        - alias: La CIBLE est à plus de xx mètres de la zone
+          condition: template
+          value_template: '{% if prox_zone is defined and prox_distance is defined
+            %}
+
+            {{ (distance( prox_zone, cible_tmp ) * 1000) | int > prox_distance | float(0)
+            }}
+
+            {% endif %}'
+        then:
+        - alias: Attendre arrivée dans la zone de surveillance
+          wait_for_trigger:
+          - alias: Lorsque CIBLE est à moins de xx mètres de la zone
+            value_template: '{{ (distance( prox_zone, cible_tmp ) * 1000) | int <
+              prox_distance | float(0) }}'
+            trigger: template
+          timeout: '{{timeout}}'
+          continue_on_timeout: false
+      - alias: Identification de l'appareil mobile à notifier
+        variables:
+          device_name: '{# Conversion de person en mobile_app #}
+
+            {% if ''person.'' in cible_tmp %}
+
+            {{ expand(cible_tmp)
+
+            | map(attribute=''attributes.source'')
+
+            | list
+
+            | join
+
+            | replace(''device_tracker.'', ''mobile_app_'') }}
+
+            {# Conversion de device_tracker avec GPS en mobile_app #}
+
+            {% elif ''device_tracker.'' in cible_tmp and (state_attr(cible_tmp,''gps_accuracy'')
+            or 0 ) > 0 %}
+
+            mobile_app_{{ state_attr(cible_tmp,''friendly_name'') | slugify }}
+
+            {# Déjà un mobile_app #}
+
+            {% elif ''mobile_app_'' in cible_tmp %}
+
+            {{ cible_tmp }}
+
+            {# Les autres cas sont ignoré #}
+
+            {% endif %}'
+      - alias: Notification si l'appareil mobile est connu sinon log erreur
+        if:
+        - alias: L'appareil mobile est trouvé
+          condition: template
+          value_template: '{{ device_name != '''' }}'
+        then:
+        - alias: Envoie une notification ciblé
+          data:
+            title: '{{titre}}'
+            message: '{{message}}'
+            data:
+              subject: '{{resume}}'
+              tag: '{{tag}}'
+              notification_icon: '{{icone}}'
+              color: '{{couleur}}'
+              icon_url: '{{illustration}}'
+              sticky: '{{collant}}'
+              persistent: '{{persistant}}'
+              clickAction: '{{click}}'
+              actions: '{{actions}}'
+          action: notify.{{device_name}}
+        else:
+        - alias: Log erreur
+          metadata: {}
+          data:
+            title: Notifs avec proximité
+            message: Vous avez choisi une entité qui ne peut pas être notifiée<br>Veuillez
+              enlever de la liste<br>**{{cible_tmp}}**
+          action: persistent_notification.create
+    - alias: Entrée n°2 de CIBLE
+      if:
+      - alias: Si entrée n°2 de CIBLE existe
+        condition: template
+        value_template: '{{ cible[1] is defined }}'
+      then:
+      - alias: Variables Personne/Appareil et Zone
+        variables:
+          cible_tmp: '{{cible[1]}}'
+          prox_zone: '{% if prox_zone is defined %}{{prox_zone.entity_id}}{% endif
+            %}'
+      - alias: Attendre si hors zone
+        if:
+        - alias: La CIBLE est à plus de xx mètres de la zone
+          condition: template
+          value_template: '{% if prox_zone is defined and prox_distance is defined
+            %} {{ (distance( prox_zone, cible_tmp ) * 1000) | int > prox_distance
+            | float(0) }} {% endif %}'
+        then:
+        - alias: Attendre arrivée dans la zone de surveillance
+          wait_for_trigger:
+          - alias: Lorsque CIBLE est à moins de xx mètres de la zone
+            value_template: '{{ (distance( prox_zone, cible_tmp ) * 1000) | int <
+              prox_distance | float(0) }}'
+            trigger: template
+          timeout: '{{timeout}}'
+          continue_on_timeout: false
+      - alias: Identification de l'appareil mobile à notifier
+        variables:
+          device_name: "{% if 'person.' in cible_tmp %}\n{{ expand(cible_tmp)\n| map(attribute='attributes.source')\n|
+            list\n| join\n| replace('device_tracker.', 'mobile_app_') }}\n{% elif
+            'device_tracker.' in cible_tmp and (state_attr(cible_tmp, 'gps_accuracy')
+            or 0 ) > 0 %}\nmobile_app_{{ state_attr(cible_tmp,'friendly_name') \n|
+            slugify }}\n{% elif 'mobile_app_' in cible_tmp %}\n{{ cible_tmp }}\n{%
+            endif %}\n"
+      - alias: Notification si l'appareil mobile est connu sinon log erreur
+        if:
+        - alias: L'appareil mobile est trouvé
+          condition: template
+          value_template: '{{ device_name != '''' }}'
+        then:
+        - alias: Envoie une notification ciblé
+          data:
+            title: '{{titre}}'
+            message: '{{message}}'
+            data:
+              subject: '{{resume}}'
+              tag: '{{tag}}'
+              notification_icon: '{{icone}}'
+              color: '{{couleur}}'
+              icon_url: '{{illustration}}'
+              sticky: '{{collant}}'
+              persistent: '{{persistant}}'
+              clickAction: '{{click}}'
+              actions: '{{actions}}'
+          action: notify.{{device_name}}
+        else:
+        - alias: Log erreur
+          metadata: {}
+          data:
+            title: Notifs avec proximité
+            message: Vous avez choisi une entité qui ne peut pas être notifiée<br>Veuillez
+              enlever de la liste<br>**{{cible_tmp}}**
+          action: persistent_notification.create
+    - alias: Entrée n°3 de CIBLE
+      if:
+      - alias: Si entrée n°3 de CIBLE existe
+        condition: template
+        value_template: '{{ cible[2] is defined }}'
+      then:
+      - alias: Variables Personne/Appareil et Zone
+        variables:
+          cible_tmp: '{{cible[2]}}'
+          prox_zone: '{% if prox_zone is defined %}{{prox_zone.entity_id}}{% endif
+            %}'
+      - alias: Attendre si hors zone
+        if:
+        - alias: La CIBLE est à plus de xx mètres de la zone
+          condition: template
+          value_template: '{% if prox_zone is defined and prox_distance is defined
+            %} {{ (distance( prox_zone, cible_tmp ) * 1000) | int > prox_distance
+            | float(0) }} {% endif %}'
+        then:
+        - alias: Attendre arrivée dans la zone de surveillance
+          wait_for_trigger:
+          - alias: Lorsque CIBLE est à moins de xx mètres de la zone
+            value_template: '{{ (distance( prox_zone, cible_tmp ) * 1000) | int <
+              prox_distance | float(0) }}'
+            trigger: template
+          timeout: '{{timeout}}'
+          continue_on_timeout: false
+      - alias: Identification de l'appareil mobile à notifier
+        variables:
+          device_name: "{% if 'person.' in cible_tmp %}\n{{ expand(cible_tmp)\n| map(attribute='attributes.source')\n|
+            list\n| join\n| replace('device_tracker.', 'mobile_app_') }}\n{% elif
+            'device_tracker.' in cible_tmp and (state_attr(cible_tmp, 'gps_accuracy')
+            or 0 ) > 0 %}\nmobile_app_{{ state_attr(cible_tmp,'friendly_name') \n|
+            slugify }}\n{% elif 'mobile_app_' in cible_tmp %}\n{{ cible_tmp }}\n{%
+            endif %}\n"
+      - alias: Notification si l'appareil mobile est connu sinon log erreur
+        if:
+        - alias: L'appareil mobile est trouvé
+          condition: template
+          value_template: '{{ device_name != '''' }}'
+        then:
+        - alias: Envoie une notification ciblé
+          data:
+            title: '{{titre}}'
+            message: '{{message}}'
+            data:
+              subject: '{{resume}}'
+              tag: '{{tag}}'
+              notification_icon: '{{icone}}'
+              color: '{{couleur}}'
+              icon_url: '{{illustration}}'
+              sticky: '{{collant}}'
+              persistent: '{{persistant}}'
+              clickAction: '{{click}}'
+              actions: '{{actions}}'
+          action: notify.{{device_name}}
+        else:
+        - alias: Log erreur
+          metadata: {}
+          data:
+            title: Notifs avec proximité
+            message: Vous avez choisi une entité qui ne peut pas être notifiée<br>Veuillez
+              enlever de la liste<br>**{{cible_tmp}}**
+          action: persistent_notification.create
+    - alias: Entrée n°4 de CIBLE
+      if:
+      - alias: Si entrée n°4 de CIBLE existe
+        condition: template
+        value_template: '{{ cible[3] is defined }}'
+      then:
+      - alias: Variables Personne/Appareil et Zone
+        variables:
+          cible_tmp: '{{cible[3]}}'
+          prox_zone: '{% if prox_zone is defined %}{{prox_zone.entity_id}}{% endif
+            %}'
+      - alias: Attendre si hors zone
+        if:
+        - alias: La CIBLE est à plus de xx mètres de la zone
+          condition: template
+          value_template: '{% if prox_zone is defined and prox_distance is defined
+            %} {{ (distance( prox_zone, cible_tmp ) * 1000) | int > prox_distance
+            | float(0) }} {% endif %}'
+        then:
+        - alias: Attendre arrivée dans la zone de surveillance
+          wait_for_trigger:
+          - alias: Lorsque CIBLE est à moins de xx mètres de la zone
+            value_template: '{{ (distance( prox_zone, cible_tmp ) * 1000) | int <
+              prox_distance | float(0) }}'
+            trigger: template
+          timeout: '{{timeout}}'
+          continue_on_timeout: false
+      - alias: Identification de l'appareil mobile à notifier
+        variables:
+          device_name: "{% if 'person.' in cible_tmp %}\n{{ expand(cible_tmp)\n| map(attribute='attributes.source')\n|
+            list\n| join\n| replace('device_tracker.', 'mobile_app_') }}\n{% elif
+            'device_tracker.' in cible_tmp and (state_attr(cible_tmp, 'gps_accuracy')
+            or 0 ) > 0 %}\nmobile_app_{{ state_attr(cible_tmp,'friendly_name') \n|
+            slugify }}\n{% elif 'mobile_app_' in cible_tmp %}\n{{ cible_tmp }}\n{%
+            endif %}\n"
+      - alias: Notification si l'appareil mobile est connu sinon log erreur
+        if:
+        - alias: L'appareil mobile est trouvé
+          condition: template
+          value_template: '{{ device_name != '''' }}'
+        then:
+        - alias: Envoie une notification ciblé
+          data:
+            title: '{{titre}}'
+            message: '{{message}}'
+            data:
+              subject: '{{resume}}'
+              tag: '{{tag}}'
+              notification_icon: '{{icone}}'
+              color: '{{couleur}}'
+              icon_url: '{{illustration}}'
+              sticky: '{{collant}}'
+              persistent: '{{persistant}}'
+              clickAction: '{{click}}'
+              actions: '{{actions}}'
+          action: notify.{{device_name}}
+        else:
+        - alias: Log erreur
+          metadata: {}
+          data:
+            title: Notifs avec proximité
+            message: Vous avez choisi une entité qui ne peut pas être notifiée<br>Veuillez
+              enlever de la liste<br>**{{cible_tmp}}**
+          action: persistent_notification.create
+    - alias: Entrée n°5 de CIBLE
+      if:
+      - alias: Si entrée n°5 de CIBLE existe
+        condition: template
+        value_template: '{{ cible[4] is defined }}'
+      then:
+      - alias: Variables Personne/Appareil et Zone
+        variables:
+          cible_tmp: '{{cible[4]}}'
+          prox_zone: '{% if prox_zone is defined %}{{prox_zone.entity_id}}{% endif
+            %}'
+      - alias: Attendre si hors zone
+        if:
+        - alias: La CIBLE est à plus de xx mètres de la zone
+          condition: template
+          value_template: '{% if prox_zone is defined and prox_distance is defined
+            %} {{ (distance( prox_zone, cible_tmp ) * 1000) | int > prox_distance
+            | float(0) }} {% endif %}'
+        then:
+        - alias: Attendre arrivée dans la zone de surveillance
+          wait_for_trigger:
+          - alias: Lorsque CIBLE est à moins de xx mètres de la zone
+            value_template: '{{ (distance( prox_zone, cible_tmp ) * 1000) | int <
+              prox_distance | float(0) }}'
+            trigger: template
+          timeout: '{{timeout}}'
+          continue_on_timeout: false
+      - alias: Identification de l'appareil mobile à notifier
+        variables:
+          device_name: "{% if 'person.' in cible_tmp %}\n{{ expand(cible_tmp)\n| map(attribute='attributes.source')\n|
+            list\n| join\n| replace('device_tracker.', 'mobile_app_') }}\n{% elif
+            'device_tracker.' in cible_tmp and (state_attr(cible_tmp, 'gps_accuracy')
+            or 0 ) > 0 %}\nmobile_app_{{ state_attr(cible_tmp,'friendly_name') \n|
+            slugify }}\n{% elif 'mobile_app_' in cible_tmp %}\n{{ cible_tmp }}\n{%
+            endif %}\n"
+      - alias: Notification si l'appareil mobile est connu sinon log erreur
+        if:
+        - alias: L'appareil mobile est trouvé
+          condition: template
+          value_template: '{{ device_name != '''' }}'
+        then:
+        - alias: Envoie une notification ciblé
+          data:
+            title: '{{titre}}'
+            message: '{{message}}'
+            data:
+              subject: '{{resume}}'
+              tag: '{{tag}}'
+              notification_icon: '{{icone}}'
+              color: '{{couleur}}'
+              icon_url: '{{illustration}}'
+              sticky: '{{collant}}'
+              persistent: '{{persistant}}'
+              clickAction: '{{click}}'
+              actions: '{{actions}}'
+          action: notify.{{device_name}}
+        else:
+        - alias: Log erreur
+          metadata: {}
+          data:
+            title: Notifs avec proximité
+            message: Vous avez choisi une entité qui ne peut pas être notifiée<br>Veuillez
+              enlever de la liste<br>**{{cible_tmp}}**
+          action: persistent_notification.create
+    - alias: Entrée n°6 de CIBLE
+      if:
+      - alias: Si entrée n°6 de CIBLE existe
+        condition: template
+        value_template: '{{ cible[5] is defined }}'
+      then:
+      - alias: Variables Personne/Appareil et Zone
+        variables:
+          cible_tmp: '{{cible[5]}}'
+          prox_zone: '{% if prox_zone is defined %}{{prox_zone.entity_id}}{% endif
+            %}'
+      - alias: Attendre si hors zone
+        if:
+        - alias: La CIBLE est à plus de xx mètres de la zone
+          condition: template
+          value_template: '{% if prox_zone is defined and prox_distance is defined
+            %} {{ (distance( prox_zone, cible_tmp ) * 1000) | int > prox_distance
+            | float(0) }} {% endif %}'
+        then:
+        - alias: Attendre arrivée dans la zone de surveillance
+          wait_for_trigger:
+          - alias: Lorsque CIBLE est à moins de xx mètres de la zone
+            value_template: '{{ (distance( prox_zone, cible_tmp ) * 1000) | int <
+              prox_distance | float(0) }}'
+            trigger: template
+          timeout: '{{timeout}}'
+          continue_on_timeout: false
+      - alias: Identification de l'appareil mobile à notifier
+        variables:
+          device_name: "{% if 'person.' in cible_tmp %}\n{{ expand(cible_tmp)\n| map(attribute='attributes.source')\n|
+            list\n| join\n| replace('device_tracker.', 'mobile_app_') }}\n{% elif
+            'device_tracker.' in cible_tmp and (state_attr(cible_tmp, 'gps_accuracy')
+            or 0 ) > 0 %}\nmobile_app_{{ state_attr(cible_tmp,'friendly_name') \n|
+            slugify }}\n{% elif 'mobile_app_' in cible_tmp %}\n{{ cible_tmp }}\n{%
+            endif %}\n"
+      - alias: Notification si l'appareil mobile est connu sinon log erreur
+        if:
+        - alias: L'appareil mobile est trouvé
+          condition: template
+          value_template: '{{ device_name != '''' }}'
+        then:
+        - alias: Envoie une notification ciblé
+          data:
+            title: '{{titre}}'
+            message: '{{message}}'
+            data:
+              subject: '{{resume}}'
+              tag: '{{tag}}'
+              notification_icon: '{{icone}}'
+              color: '{{couleur}}'
+              icon_url: '{{illustration}}'
+              sticky: '{{collant}}'
+              persistent: '{{persistant}}'
+              clickAction: '{{click}}'
+              actions: '{{actions}}'
+          action: notify.{{device_name}}
+        else:
+        - alias: Log erreur
+          metadata: {}
+          data:
+            title: Notifs avec proximité
+            message: Vous avez choisi une entité qui ne peut pas être notifiée<br>Veuillez
+              enlever de la liste<br>**{{cible_tmp}}**
+          action: persistent_notification.create
+  fields:
+    description:
+      name: Description
+      description: Retient les notifications jusqu'à retour en zone de la personne
+        ou de l'appareil mobile. Les notifications peuvent être habillée et trois
+        boutons action peuvent être ajouté
+      selector:
+        text:
+          multiline: true
+    personnes:
+      name: Personnes
+      description: Qui notifier ? Personnes ou appareil mobile. Vide pour notifier
+        tous les appareils
+      selector:
+        target: {}
+      default:
+        entity_id:
+        - person.delhaye_leo
+        - person.delhaye_christophe
+        - person.hee_melanie
+        - person.delhaye_elliot
+      required: true
+    prox_zone:
+      name: Zone
+      description: Zone à surveiller. Si vide, pas de détection retour zone
+      selector:
+        target: {}
+      default:
+        entity_id: zone.home
+    prox_distance:
+      name: Distance
+      description: Distance pour l'entrée en zone de surveillance. Si vide, pas de
+        détection retour zone
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 50
+      default: 200
+    timeout:
+      name: Timeout
+      description: Durée de retention des notifications. 18h si vide ou omis
+      selector:
+        time: {}
+      default: '18:00:00'
+    titre:
+      name: Titre
+      selector:
+        template: {}
+      default: Titre facultatif
+    message:
+      name: Message
+      description: Possible d'utiliser du HTML
+      selector:
+        template: {}
+      required: true
+      default: Placez votre message
+    resume:
+      name: Résumé
+      description: Texte court affiché quand la notification n'est pas déroulée
+      selector:
+        text:
+    tag:
+      name: Tag
+      description: Pour remplacer une notification ayant le même tag
+      selector:
+        text:
+    icone:
+      name: Icône
+      selector:
+        icon: {}
+      default: mdi:bell
+    couleur:
+      name: Couleur
+      description: Couleur de la notification
+      selector:
+        text: {}
+    illustration:
+      name: Illustration
+      description: Illustration placée à droite de la notification
+      selector:
+        text:
+    collant:
+      name: Collé
+      description: Rester affiché après ouverture de la notification
+      selector:
+        boolean: {}
+    persistant:
+      name: Persistant
+      description: Force l'affichage, doit être effacé par une autre notification.
+        Ne fonctionne plus depuis Android 14 et doit être renvoyé par un automate
+      selector:
+        boolean: {}
+      default: true
+      required: true
+    click:
+      name: Click
+      description: Action suite au clic
+      selector:
+        text:
+    log:
+      name: log
+      description: Ajouter une notification persistante dans HA
+      selector:
+        boolean: {}
+      default: true
+    actions:
+      name: Actions
+      description: 'Mode avancé : 3 actions de notification maximum'
+      selector:
+        object: {}
+      default:
+      - action: traitement
+        title: Effectué
+      - action: refus
+        title: Plus tard
+      - action: URI
+        title: Historique
+        uri: settings://notification_history
+    source:
+      selector:
+        template: {}
+      name: Source
+      description: Informations sur le déclencheur. Code à adapter...
+      default: '{% if source is defined %}{{ source }}
+
+        {% elif trigger is defined and trigger.from_state is defined %}{{ trigger.from_state.attributes.friendly_name
+        }} depuis {{ this.attributes.friendly_name }}
+
+        {% elif trigger is defined and trigger.event and trigger.event.data.action
+        is defined %}réponse {{ trigger.event.data.action }} dans {{ this.attributes.friendly_name
+        }}
+
+        {% elif this is defined %}{{ this.attributes.friendly_name }}
+
+        {% else %}déclenchement manuel depuis [nom du script où vous êtes]
+
+        {% endif %}'
+  mode: parallel
+  icon: mdi:bell-badge
+  max: 100
+  description: ''
